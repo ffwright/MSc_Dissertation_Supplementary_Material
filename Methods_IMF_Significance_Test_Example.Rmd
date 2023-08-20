@@ -1,0 +1,301 @@
+---
+title: "IMF Significance Testing"
+author: '180000622'
+date: "2023-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+``` {r}
+# load libraries and scaled IMF data
+require(tidyverse)
+require(hrbrthemes)
+require(foreach)
+# source user defined functions
+setwd("~/MSc_Thesis_Supplementary_Material/functions")
+source('significance_test_functions.R')
+source('CEEMDAN_function.R')
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+
+
+
+First let's get the scaled IMFs for our series
+```{r}
+scaled_IMFs <- read_rds('scaled_left_alligned_IMFs.rds')
+```
+
+``` {r}
+ticker <- 'ULVR'
+
+ticker_set <- scaled_IMFs[[ticker]]
+
+scaled_IMF_df1 <- ticker_set$IMF_data[[2]]$IMFs[[1]]
+
+# select the number of series that are IMFs
+num_IMFs <- length(scaled_IMF_df1) - 2
+
+en_den_period_df1 <- data.frame(IMFs = colnames(scaled_IMF_df1[,1:num_IMFs]),
+                                energy_density = energy_density_func(scaled_IMF_df1[,1:num_IMFs]) %>% unlist(use.names = FALSE),
+                                mean_periods = lapply(scaled_IMF_df1[,1:num_IMFs], mean_period_func) %>% unlist(use.names = FALSE)
+)
+
+```
+
+```{r}
+# get generation dates
+generation_dates <- ticker_set$IMF_data[[2]]$generation_dates %>% as_date()
+
+# get announcement days
+announcement_index <- match(ticker_set$announcements, generation_dates) %>% na.omit() 
+announcement_df <- data.frame(index = announcement_index)
+```
+
+Get price and price change:
+
+```{r}
+
+# import price data for the period [T, T+g+1]
+price_data <- read_rds('master_stock_prices.rds')
+
+ticker_price <- price_data[price_data$ticker == ticker, ]
+
+matching_dates <- match(generation_dates, ticker_price$date) %>% range()
+
+# extract matching prices with a padding on eaither side for differencing
+gen_period_prices <- ticker_price[(matching_dates[1]-1):(matching_dates[2]+1), ]
+
+ticker_prices_df <- gen_period_prices %>% select(date, price) %>% mutate(date = as_date(date), price_change = c(NA, diff(price)[1:(length(price)-1)]))
+
+# trim down for CEEMDAN processing
+ticker_prices_trim <- ticker_prices_df[3:nrow(gen_period_prices), ]
+```
+```{r}
+# do CEEMDAN on minmax scaled prices and price change
+scaled_price_IMF <- ceemdan_function(ticker_prices_trim$price, scaled = TRUE)
+scaled_change_IMF <- ceemdan_function(ticker_prices_trim$price_change, scaled = TRUE)
+```
+
+Get the energy density profiles for price and price change
+```{r}
+en_dens_profile <- function(IMF_df) {
+    # get energy densities
+  # select the number of series that are IMFs
+  num_IMFs <- length(IMF_df) - 2
+
+  en_den_period_df <- data.frame(IMFs = colnames(IMF_df[ ,1:num_IMFs]),
+                                  energy_density = energy_density_func(IMF_df[,1:num_IMFs]) %>% unlist(use.names = FALSE),
+                                mean_periods = lapply(IMF_df[,1:num_IMFs], mean_period_func) %>% unlist(use.names = FALSE)
+)
+return(en_den_period_df)
+}
+```
+
+Define a function to plot the Wu test
+```{r}
+
+Wu_test <- function(IMF_df) {
+  
+  # get energy density profile
+  
+  en_den_period_df <- en_dens_profile(IMF_df)
+  
+  # set variables for confidence intervals
+  N <- length(IMF_df$series)
+  x_series <- seq(0, max(log(en_den_period_df$mean_periods)), 0.1)
+
+  CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.01, N = N))
+
+  CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+
+
+  # plot
+  en_den_period_df %>% ggplot() +
+  geom_point(aes(x = log(mean_periods), 
+                 y = log(energy_density),
+                 color = IMFs)) +
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+  theme_ipsum()
+  
+}
+```
+
+Apply to IMF set
+```{r}
+Wu_test(scaled_price_IMF)
+```
+
+Modify the plot so that we have all examples on at once
+```{r}
+# get energy densities for each series and merge
+en_den_score <- en_dens_profile(scaled_IMF_df1)
+en_den_price <- en_dens_profile(scaled_price_IMF)
+en_den_change <- en_dens_profile(scaled_change_IMF)
+
+# get long series with a variable to use for shape
+en_den <- data.frame(IMFs = en_den_score$IMFs, 
+                     `g+1` = en_den_score$energy_density,
+                     price = en_den_price$energy_density,
+                     change = en_den_change$energy_density) %>%
+  pivot_longer(-IMFs) %>% set_names(c('IMFs', 'series', 'en_den'))
+
+period <-  data.frame(IMFs = en_den_score$IMFs, 
+                     `g+1` = en_den_score$mean_periods,
+                     price = en_den_price$mean_periods,
+                     change = en_den_change$mean_periods)  %>%
+  pivot_longer(-IMFs) %>% set_names(c('IMFs', 'series', 'mean_periods'))
+
+# merge inot one long series
+
+en_den_period_merge <- merge(en_den, period, by = c('IMFs', 'series'))
+
+  # set variables for confidence intervals
+  N <- length(scaled_IMF_df1$series)
+  x_series <- seq(0, max(log(en_den_price$mean_periods)), 0.1)
+
+  CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.01, N = N))
+
+  CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+
+
+  # plot
+  en_den_period_merge %>% ggplot() +
+    # plot scaled expectations
+    geom_point(aes(x = log(mean_periods), 
+                 y = log(en_den),
+                 color = IMFs,
+                 shape = series), size = 2) +
+
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+    
+    labs(x = expression(ln(bar(T))),
+         y = expression(ln(E)),
+         color = NULL,
+         shape = NULL) +
+  theme_minimal()
+  
+  
+
+
+```
+
+
+Now apply this method to all the IMFs for this generation period 
+```{r}
+IMF_df <- ticker_set$IMF_data[[1]]$IMFs
+# select the number of series that are IMFs
+num_IMFs <- length(scaled_IMF_df1) - 2
+
+en_dens_period_generation <- foreach(series = IMF_df, .final = function(x) {bind_rows(x)}) %do% {
+  en_den_period_df <- data.frame(IMFs = colnames(series[,1:num_IMFs]),
+                                energy_density = energy_density_func(series[,1:num_IMFs]) %>% unlist(use.names = FALSE),
+                                mean_periods = lapply(series[,1:num_IMFs], mean_period_func) %>% unlist(use.names = FALSE)
+)
+}
+```
+```{r}
+
+  # set variables for confidence intervals
+  N <- length(scaled_IMF_df1$series)
+  x_series <- seq(0, max(log(en_dens_period_generation$mean_periods)), 0.1)
+
+  CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.01, N = N))
+
+  CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+
+
+  # plot
+  en_dens_period_generation %>% ggplot() +
+    # plot scaled expectations
+    geom_point(aes(x = log(mean_periods), 
+                 y = log(energy_density),
+                 color = IMFs), size = 1.5) +
+
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+    
+    labs(x = expression(ln(bar(T))),
+         y = expression(ln(E)),
+         color = NULL) +
+  theme_minimal()
+```
+Now apply this to all the decomposed series...
+
+```{r}
+
+en_dens_whole <- foreach(ticker = scaled_IMFs) %do% {
+ 
+  en_dens_period_ticker <- foreach(IMF_list = ticker$IMF_data, .final =
+                                         function(x){bind_rows(x)}) %do% {
+    IMF_df <- IMF_list$IMFs
+
+    en_dens_period_generation <- foreach(series = IMF_df, .final =
+                                         function(x){bind_rows(x)}) %do% {
+                                           # select the number of series that are IMFs
+    num_IMFs <- length(series) - 2
+    
+    en_den_period_df <- data.frame(IMFs = colnames(series[,1:num_IMFs]),
+                                  energy_density = energy_density_func(series[,1:num_IMFs]) %>%
+                                    unlist(use.names = FALSE),
+                                  mean_periods = lapply(series[,1:num_IMFs],
+                                                      mean_period_func) %>%
+                                  unlist(use.names = FALSE))
+  }
+  }
+}
+en_dens_whole <- set_names(en_dens_whole, names(scaled_IMFs))
+  
+```
+```{r}
+# bind all the data together
+whole <- en_dens_whole %>% bind_rows()
+
+# filter out Inf period edge cases
+whole_filtered <- whole[whole$mean_periods != Inf, ]
+
+# plot:
+N <- length(scaled_IMF_df1$series)
+alpha <- 0.01
+x_series <- seq(0, max(log(whole_filtered$mean_periods)), 0.1)
+
+CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = alpha, N = N))
+
+CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+whole_filtered %>% ggplot() +
+  geom_point(aes(x = log(mean_periods), 
+                 y = log(energy_density),
+                 color = IMFs),
+             alpha = 0.2) +
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+  theme_ipsum()
+
+```

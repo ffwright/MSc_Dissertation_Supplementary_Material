@@ -1,0 +1,322 @@
+---
+title: "Cross-Correlation Examples and Results"
+author: '180000622'
+date: "2023-08-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(foreach)
+library(forecast)
+library(foreach)
+library(ggpubr)
+library(ggcorrplot)
+library(gridExtra)
+
+setwd("~/MSc_Thesis_Supplementary_Material/functions")
+source('significance_test_functions.R')
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+
+```{r}
+# source prepared data objects
+long_left_IMFs <- read_rds('long_series_IMFs.rds')
+scaled_long_left_IMFs <- read_rds('scaled_long_series_IMFs.rds')
+
+scaled_price_IMFs <- read_rds('scaled_price_IMFs.rds')
+unscaled_price_IMFs <- read_rds('unscaled_price_IMFs.rds')
+```
+```{r}
+# lagged cross-correlation function
+lagged_ccf <- function(series_x, series_y) {
+  
+  # get the length of the series (this is the same)
+  len <- length(series_x)
+  
+  # get estimates of the mean periods
+  x_period <- mean_period_func(series_x) %>% round(0)
+  y_period <- mean_period_func(series_y) %>% round(0)
+  
+  # set the lag to be the max period, or 90 if the max period
+  # is greater than 90 (which is roughly 40% of the series length)
+  lag <- min((max(x_period, y_period)), 90)
+  
+  # set the window to be the max lag or 5 (so that it is not computing only the correlation of 3 values)
+  window <- max(5, lag + 1)
+  
+  # initialize values for looping
+  cc_list <- vector('list', len) %>%
+    set_names(as.character(seq(1,len)))
+
+  # start the at g = half the window length 
+  # and set the end to the length minus half the window
+  # this maximises the window over which correlations are computed
+  for (i in (window/2):(len - window/2)) {
+    ccf <- forecast::Ccf(series_x[(i-window/2 + 1):(i+window/2)],
+              series_y[(i-window/2 + 1):(i+window/2)],
+              lag.max = lag, plot = FALSE)
+    
+    cc_list[[i]] <- data.frame(lag = ccf$lag, coef = ccf$acf)
+    
+  }
+  cc_df <- cc_list %>% bind_rows(.id = 'g')
+  
+  cc_df <- cc_df %>% mutate(g = as.numeric(g))
+  return(cc_df)
+}
+```
+```{r}
+# Function to get the announcemnt g values
+announcement_g_values <- function(ticker, merged_forecast_num) {
+  # returns the matching index number of generation dates for the forecast of the announcemnts. This index is equivalent to g
+  announcement_g <- match(as_date(long_left_IMFs[[ticker]]$announcements), as_date(long_left_IMFs[[ticker]]$IMF_data[[merged_forecast_num]]$generation_dates)) %>% na.omit()
+  
+  announcement_g_df <- data.frame(g = announcement_g)
+  return(announcement_g_df)
+}
+
+```
+```{r}
+# Function to plot the lagged correlations
+lagged_ccf_plot <- function(lagged_ccf, ticker, merged_forecast_num) {
+  
+  # get g values of announcemnt dates
+  announce_df <- announcement_g_values(ticker, merged_forecast_num)
+  
+  # make the plot
+  lagged_plot <- lagged_ccf %>%
+  ggplot(aes(x = as.numeric(g), y = lag, fill = coef)) + 
+    geom_tile() +
+    scale_fill_gradient2(low = '#f4a317', mid = 'white', high = '#138ade') +
+    
+    labs(x = NULL,
+         y = expression(lambda),
+         fill = NULL) +
+    scale_x_continuous(limits = c(0, NA)) +
+    theme_minimal(base_size = 6) +
+    theme(legend.key.size = unit(0.3,'cm'))
+  
+  # add announcements
+  lagged_plot <- lagged_plot + geom_vline(data = announce_df, aes(xintercept = g), color = 'black', alpha = 0.5, linetype = 'dashed')
+  return(lagged_plot)
+}
+
+```
+
+
+```{r}
+tickers <- names(long_left_IMFs)
+
+correlations <- foreach(ticker = tickers) %do% {
+  ticker_score_IMFs <- long_left_IMFs[[ticker]]$IMF_data
+  price_IMFs <- unscaled_price_IMFs[[ticker]]$price_IMFs
+  change_IMFs <- unscaled_price_IMFs[[ticker]]$change_IMFs
+
+  cor_list <- foreach(i = seq(1:length(ticker_score_IMFs))) %do% {
+    g1 <- ticker_score_IMFs[[i]]$IMFs[[1]][,1:8]
+    price <- price_IMFs[[i]][,1:8]
+    change <- change_IMFs[[i]][,1:8]
+    
+    price_cor <- cor(g1,price)
+    change_cor <- cor(g1, change)
+    
+    list(g1_price = price_cor,
+         g1_change = change_cor)
+  }
+}
+correlations <- set_names(correlations, tickers)
+```
+
+# ULVR Example Pearson Correlation Plots
+```{r}
+# get correlation plots
+cor_exp_chang <- correlations$ULVR[[2]]$g1_change
+cor_exp_price <- correlations$ULVR[[2]]$g1_price
+
+ggcorrplot::ggcorrplot(cor_exp_chang,lab = TRUE, legend.title = NULL, colors = c('#f4a317', 'white', '#138ade'))
+ggcorrplot::ggcorrplot(cor_exp_price, lab = TRUE, show.legend = FALSE, colors = c('#f4a317', 'white', '#138ade'))
+```
+
+
+```{r}
+IMF_names <- colnames(long_left_IMFs$ADM$IMF_data[[1]]$IMFs[[1]])[1:8]
+merged_forecast_correlations <- unlist(correlations, recursive = FALSE, use.names = FALSE)
+
+price_corelations <- lapply(merged_forecast_correlations, function(X) {X[[1]]})
+change_corelations <- lapply(merged_forecast_correlations, function(X) {X[[2]]})
+
+
+Y <- do.call(cbind, price_corelations)
+Y <- array(Y, dim=c(dim(price_corelations[[1]]), length(price_corelations)))
+median_mat_price <- apply(Y, c(1, 2), median, na.rm = TRUE)
+median_mat_price <- `rownames<-`(median_mat_price, rownames(change_corelations[[1]])) %>%
+  `colnames<-`(IMF_names)
+
+ggcorrplot(median_mat_price, legend.title = NULL, colors = c('#f4a317', 'white', '#138ade'), lab = TRUE)
+
+Z <- do.call(cbind, change_corelations)
+Z <- array(Z, dim=c(dim(change_corelations[[1]]), length(change_corelations)))
+median_mat_change <- apply(Z, c(1, 2), median, na.rm = TRUE)
+median_mat_change <- `rownames<-`(median_mat_change, rownames(change_corelations[[1]])) %>%
+  `colnames<-`(IMF_names)
+
+ggcorrplot(median_mat_change, legend.title = NULL, colors = c('#f4a317', 'white', '#138ade'), lab = TRUE)
+```
+```{r}
+# extract the diagonals of the correlation matrices
+price_diag <- foreach(cor_mat = price_corelations, 
+                      .combine = bind_rows,
+                      .final = function(x) {
+                        x %>% mutate(forecast = rownames(x))}) %do% {
+  diag <- cor_mat %>% diag()
+}
+
+change_diag <- foreach(cor_mat = change_corelations, 
+                       .combine = bind_rows,
+                       .final = function(x) {
+                        x %>% mutate(forecast = rownames(x))}) %do% {
+  diag <- cor_mat %>% diag()
+}
+```
+```{r}
+# Histograms of diagonal cross correlation coefficients
+price_diag %>% pivot_longer(-forecast) %>% ggplot(aes(x = value, fill = name)) +
+  geom_histogram(bins = 15) +
+  facet_wrap(~name, scales = 'free_y', nrow = 4) +
+  labs(x = 'Correlation',
+       y = 'Number of Forecasts',
+       fill = 'IMF') +
+  theme_minimal()
+
+change_diag %>% pivot_longer(-forecast) %>% ggplot(aes(x = value, fill = name)) +
+  geom_histogram(bins = 15) +
+  facet_wrap(~name, scales = 'free_y', nrow = 4) +
+  labs(x = 'Correlation',
+       y = 'Number of Forecasts',
+       fill = 'IMF') +
+  theme_minimal()
+```
+
+
+# Time Dependant Lagged Cross Correlation:
+
+```{r}
+# read the lagged correlations from TDL_correlations.rds
+lagged_g1_correlations <- read_rds('TDL_Correlations.rds')
+```
+
+```{r}
+# Unilver Example Results
+list_of_plots_price <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations$ULVR[[2]][[j]]$price_cor, ticker = 'ULVR', merged_forecast_num = 2) + labs(x = IMF_names[j])
+}
+
+list_of_plots_change <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations$ULVR[[2]][[j]]$change_cor, ticker = 'ULVR', merged_forecast_num = 2) + labs(x = IMF_names[j])
+}
+
+grid.arrange(list_of_plots_price[[1]],list_of_plots_price[[2]], list_of_plots_price[[3]], list_of_plots_price[[4]], list_of_plots_price[[5]], list_of_plots_price[[6]], list_of_plots_price[[7]], list_of_plots_price[[8]], ncol = 2, nrow = 4)
+
+grid.arrange(list_of_plots_change[[1]], list_of_plots_change[[2]], list_of_plots_change[[3]], list_of_plots_change[[4]], list_of_plots_change[[5]], list_of_plots_change[[6]],
+list_of_plots_change[[7]], list_of_plots_change[[8]],
+ncol = 2, nrow = 4)
+```
+We need to get the original generation dates for writing the report!
+```{r}
+print('ULVR')
+long_left_IMFs[['ULVR']]$IMF_data[[2]]$generation_dates %>%
+  as_date %>% range() %>% format('%d %B %Y') 
+```
+```{r}
+# arbitary result 1:
+seed <- set.seed(2468) # reproducibility
+ticker1 <- tickers[sample(seq(1, length(tickers)), 1)]
+forecast1 <- sample(seq(1, length(long_left_IMFs[[ticker1]]$IMF_data)), 1)
+  
+
+list_of_plots_price <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations[[ticker1]][[forecast1]][[j]]$price_cor, ticker = ticker1, merged_forecast_num = forecast1) + labs(x = IMF_names[j])
+}
+
+list_of_plots_change <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations[[ticker1]][[forecast1]][[j]]$change_cor, ticker = ticker1, merged_forecast_num = forecast1) + labs(x = IMF_names[j])
+}
+
+grid.arrange(list_of_plots_price[[1]],list_of_plots_price[[2]], list_of_plots_price[[3]], list_of_plots_price[[4]], list_of_plots_price[[5]], list_of_plots_price[[6]],
+list_of_plots_price[[7]], list_of_plots_price[[8]],
+ncol = 2, nrow = 4)
+
+grid.arrange(list_of_plots_change[[1]], list_of_plots_change[[2]], list_of_plots_change[[3]], list_of_plots_change[[4]], list_of_plots_change[[5]], list_of_plots_change[[6]],
+list_of_plots_change[[7]], list_of_plots_change[[8]],
+ncol = 2, nrow = 4)
+```
+
+We need to get the original generation dates for writing the report!
+```{r}
+ticker1
+long_left_IMFs[[ticker1]]$IMF_data[[forecast1]]$generation_dates %>% 
+  as_date %>% range() %>% format('%d %B %Y') 
+```
+
+```{r}
+# arbitary result 2:
+seed <- set.seed(13579) # reproducibility
+ticker2 <- tickers[sample(seq(1, length(tickers)), 1)]
+forecast2 <- sample(seq(1, length(long_left_IMFs[[ticker2]]$IMF_data)), 1)
+  
+list_of_plots_price <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations[[ticker2]][[forecast2]][[j]]$price_cor, ticker = ticker2, merged_forecast_num = forecast2) + labs(x = IMF_names[j])
+}
+
+list_of_plots_change <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations[[ticker2]][[forecast2]][[j]]$change_cor, ticker = ticker2, merged_forecast_num = forecast2) + labs(x = IMF_names[j])
+}
+
+grid.arrange(list_of_plots_price[[1]],list_of_plots_price[[2]], list_of_plots_price[[3]], list_of_plots_price[[4]], list_of_plots_price[[5]], list_of_plots_price[[6]],
+list_of_plots_price[[7]], list_of_plots_price[[8]],
+ncol = 2, nrow = 4)
+
+grid.arrange(list_of_plots_change[[1]], list_of_plots_change[[2]], list_of_plots_change[[3]], list_of_plots_change[[4]], list_of_plots_change[[5]], list_of_plots_change[[6]],
+list_of_plots_change[[7]], list_of_plots_change[[8]],
+ncol = 2, nrow = 4)
+```
+
+We need to get the original generation dates for writing the report!
+```{r}
+ticker2
+long_left_IMFs[[ticker2]]$IMF_data[[forecast2]]$generation_dates %>% 
+  as_date %>% range() %>% format('%d %B %Y') 
+```
+
+```{r}
+# arbitary result 3:
+seed <- set.seed(666) # reproducibility
+ticker3 <- tickers[sample(seq(1, length(tickers)), 1)]
+forecast3 <- sample(seq(1, length(long_left_IMFs[[ticker3]]$IMF_data)), 1)
+  
+list_of_plots_price <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations[[ticker3]][[forecast3]][[j]]$price_cor, ticker = ticker3, merged_forecast_num = forecast3) + labs(x = IMF_names[j])
+}
+
+list_of_plots_change <- foreach(j = seq(1,8)) %do% {
+  lagged_ccf_plot(lagged_g1_correlations[[ticker3]][[forecast3]][[j]]$change_cor, ticker = ticker3, merged_forecast_num = forecast3) + labs(x = IMF_names[j])
+}
+
+grid.arrange(list_of_plots_price[[1]],list_of_plots_price[[2]], list_of_plots_price[[3]], list_of_plots_price[[4]], list_of_plots_price[[5]], list_of_plots_price[[6]],
+list_of_plots_price[[7]], list_of_plots_price[[8]],
+ncol = 2, nrow = 4)
+
+grid.arrange(list_of_plots_change[[1]], list_of_plots_change[[2]], list_of_plots_change[[3]], list_of_plots_change[[4]], list_of_plots_change[[5]], list_of_plots_change[[6]],
+list_of_plots_change[[7]], list_of_plots_change[[8]],
+ncol = 2, nrow = 4)
+```
+
+We need to get the original generation dates for writing the report!
+```{r}
+ticker3
+long_left_IMFs[[ticker3]]$IMF_data[[forecast3]]$generation_dates %>% 
+  as_date %>% range() %>% format('%d %B %Y') 
+```

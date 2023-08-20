@@ -1,0 +1,516 @@
+---
+title: "2.1_Irithmics_Expectation_Data"
+author: '180000622'
+date: "2023-08-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+
+library(jsonlite)
+library(tidyverse)
+library(hrbrthemes)
+library(gridExtra)
+library(foreach)
+
+# get expectation time data using UDF
+setwd("~/MSc_Thesis_Supplementary_Material/functions")
+source('step_ahead_expectation_functions.R')
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+
+First let's import an example Irithmics' data file
+
+```{r}
+# set working directory to data folder so that from JSON can read the file
+setwd("~/MSc_Thesis_Supplementary_Material/data_folder")
+
+ULVR_2021 <- list(Feb = 'JSON forecast for ULVR.XLON 2021-02-04.json', 
+Apr = 'JSON forecast for ULVR.XLON 2021-04-29.json', 
+Jul = 'JSON forecast for ULVR.XLON 2021-07-22.json', 
+Oct =  'JSON forecast for ULVR.XLON 2021-10-21.json')
+
+ULVR_data_set <- lapply(ULVR_2021, fromJSON)
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+
+The file is a list containing two elements, 
+
+(1) forecast dates = the dates over which all the expectation forecasts in the set cover. 
+(2) as_of_dates = a list containing 2 elements. The first is a  vecotor of generation dates of each forecast,
+the second is a list the same length as the generation dates vector with each element containing the Irithmics' forecast for each day in the forecast range. 
+
+The file name also contains the information of the announcement date (which is also the last generation date) and the ticker of the company that the file is generated for.
+
+```{r}
+# extract each element
+announcement_date <- lubridate::ymd(ULVR_2021[['Jul']])
+
+ticker <- str_split_1(str_split_1(ULVR_2021[['Jul']], ' ')[4], '.XLON')[1]
+
+forecast_dates <- ULVR_data_set$Jul$forecast_dates
+generation_dates <- ULVR_data_set$Jul$as_of_dates$date
+
+forecast_data <- ULVR_data_set$Jul$as_of_dates$data %>% lapply(as.data.frame) %>% bind_cols() %>% set_names(as.character(seq(1, length(ULVR_data_set$Jul$as_of_dates$data))))
+```
+The first column of this data set is the forecast generated on the first generation day g_1.
+
+We can plot it as a time series:
+
+```{r}
+# make data frame with score data and forecast_dates
+F1 <- data.frame(forecast_date = forecast_dates, F_1 = forecast_data$`1`,
+                 F_30 = forecast_data$`30`,
+                 F_60 = forecast_data$`60`)
+gen_dates <- c(generation_dates[1], generation_dates[30], generation_dates[60])
+
+# plot as a time series:
+
+F1 %>% pivot_longer(-forecast_date) %>% ggplot(aes(x = as_date(forecast_date), y = value, color = name)) + 
+  geom_line() + geom_point() + 
+  geom_vline(xintercept = announcement_date, linetype = 'dashed', alpha = 0.7) +
+  scale_x_date(date_breaks = 'week', date_labels = '%d/%m/%y') +
+  scale_color_discrete(labels = gen_dates) +
+  labs(x = 'Forecast Date',
+       y = 'Irithmics Score',
+       color = 'Generation Date') +
+  theme_ipsum(base_size = 6) +
+  theme(axis.text.x = element_text(angle = 90))
+
+
+```
+```{r}
+# isolate the row of data that pertains to the announcement date (this is the last generation date)
+announce_data <- forecast_data[length(generation_dates), ] %>% unlist(use.names = FALSE)
+
+# make data frame with announce data and generation_dates
+announce_df <- data.frame(generation_date = generation_dates, score = announce_data)
+
+# plot as a time series:
+
+announce_df %>% ggplot(aes(x = as_date(generation_date), y = score)) + 
+  geom_line() + geom_point() + 
+  scale_x_date(date_breaks = 'week', date_labels = '%d/%m/%y') +
+  labs(x = 'Generation Date',
+       y = paste('Irithmics Score:', format(announcement_date, '%d/%b/%y'))) +
+  theme_ipsum(base_size = 6) +
+  theme(axis.text.x = element_text(angle = 90))
+
+
+```
+
+Now let us construct a color map of the irithmics score:
+
+```{r}
+forecast_data %>% mutate(forecast_date = forecast_dates) %>%
+  pivot_longer(-forecast_date) %>% 
+  ggplot(aes(x = as.factor(forecast_date), y = as.numeric(name), fill = value)) + geom_tile() +
+  geom_vline(xintercept = as.character(announcement_date), 
+             color='black', linetype = 'dashed', 
+             linewidth = 0.6, alpha = 0.5) +
+  
+  scale_fill_gradient2(high = 'blue', mid = 'white', low = 'red', na.value = 'lightgrey') +
+  
+  scale_y_reverse(breaks = 1:length(generation_dates), labels = as.character(format(as_date(generation_dates), '%d %b'))) +
+  
+  scale_x_discrete(labels = format(as_date(forecast_dates), '%d %b'))+
+  
+  labs(x = 'Forcast Date',
+       y = 'Generation Date',
+       fill = 'Irithmics Score') +
+  theme_minimal(base_size = 5) + 
+  theme(axis.text.x = element_text(angle = 90))
+    
+  
+
+```
+
+Now consider 'reading along the diagonal' and forming a some time series plots:
+
+```{r}
+h_step_data <- expectation_time_extract(ULVR_data_set$Jul$as_of_dates)
+
+h_step_df <- h_step_data$expect_data
+```
+```{r}
+h1 <- h_step_df %>% subset(future_day == 1) %>% pivot_longer(-future_day) %>%
+  ggplot(aes(x = as.numeric(name), y = value)) +
+  geom_point(color = 'darkred') + geom_line(color = 'darkred') +
+  geom_vline(xintercept = (length(generation_dates) - 1), linetype = 'dashed', color = 'red', alpha = 0.5) +
+  labs(x = 'Generation Date',
+       y = paste('g+1')) +
+  theme_ipsum(base_size = 6) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        plot.margin = unit(c(5.5, 5.5, 0, 5.5), "pt"))
+
+h5 <- h_step_df %>% subset(future_day == 5) %>% pivot_longer(-future_day) %>%
+  ggplot(aes(x = as.numeric(name), y = value)) +
+  geom_point(color = 'darkblue') + geom_line(color = 'darkblue') +
+  geom_vline(xintercept = (length(generation_dates) - 5), linetype = 'dashed', color = 'red', alpha = 0.5) +
+  labs(x = 'Generation Date',
+       y = paste('g+5')) +
+  theme_ipsum(base_size = 6) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        plot.margin = unit(c(1, 5.5, 0, 5.5), "pt"))
+h10 <- h_step_df %>% subset(future_day == 10) %>% pivot_longer(-future_day) %>%
+  ggplot(aes(x = as.numeric(name), y = value)) +
+  geom_point(color = 'darkorange') + geom_line(color = 'darkorange') +
+  geom_vline(xintercept = (length(generation_dates) - 10), linetype = 'dashed', color = 'red', alpha = 0.5) +
+  labs(x = 'Generation Date',
+       y = paste('g+10')) +
+  theme_ipsum(base_size = 6) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        plot.margin = unit(c(1, 5.5, 0, 5.5), "pt"))
+
+h30 <- h_step_df %>% subset(future_day == 30) %>% pivot_longer(-future_day) %>%
+  ggplot(aes(x = as.numeric(name), y = value)) +
+  geom_point(color = 'darkgreen') + geom_line(color = 'darkgreen') +
+  geom_vline(xintercept = (length(generation_dates) - 30), linetype = 'dashed', color = 'red', alpha = 0.5) +
+  labs(x = 'Generation Day, g',
+       y = paste('g+30')) +
+  theme_ipsum(base_size = 6) +
+  theme(axis.text.x = element_text(angle = 90),
+        plot.margin = unit(c(1, 5.5, 5.5, 5.5), "pt"))
+
+gridExtra::grid.arrange(h1, h5, h10, h30, nrow = 4)
+    
+```
+
+Now make the heatmap_plot:
+
+```{r}
+h_step_hm <- h_step_df %>% pivot_longer(-future_day) %>%
+  ggplot(aes(x = as.integer(future_day), y = as.numeric(name), fill = value)) + geom_tile() +
+  
+  scale_fill_gradient2(high = 'blue', mid = 'white', low = 'red', na.value = 'lightgrey') +
+  scale_x_continuous(breaks = seq(1,90, 3)) +
+  scale_y_reverse(breaks = 1:length(generation_dates), labels = as.character(format(as_date(generation_dates), '%d %b'))) +
+
+  labs(x = 'h',
+       y = 'Generation Date',
+       fill = 'Irithmics Score') +
+  theme_minimal(base_size = 5) 
+```
+```{r}
+h_step_hm +
+  geom_segment(aes(x=0, y=64, xend=63, yend=0),
+                         color='black', linetype = 'dashed', linewidth = 0.6, alpha = 0.75) 
+```
+
+Now consider the following illustration of the merging process between the data sets:
+
+``` {r}
+# extract all the forecast data as earlier in the doci=umne tfor the Jult announcement
+
+forecast_data_2021 <- lapply(ULVR_data_set, function(X) { X$as_of_dates$data %>% lapply(as.data.frame) %>% bind_cols() %>% set_names(as.character(seq(1, length(X$as_of_dates$data))))})
+```
+``` {r}
+# plot simple color maps for this data
+
+# February
+Feb_cm <- forecast_data_2021$Feb %>% mutate(forecast_date = ULVR_data_set$Feb$forecast_dates) %>%
+  pivot_longer(-forecast_date) %>% 
+  ggplot(aes(x = as.factor(forecast_date), y = as.numeric(name), fill = value)) + geom_tile() +
+
+  scale_fill_gradient2(high = 'blue', mid = 'white', low = 'red', na.value = 'lightgrey') +
+  
+  scale_y_reverse(labels = NULL) +
+  
+  scale_x_discrete(labels = NULL)+
+  
+  labs(x = 'Forcast Date',
+       y = 'February',
+       fill = 'Irithmics Score') +
+  theme_minimal(base_size = 5) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        plot.margin = unit(c(5.5, 5.5, 0, 5.5), "pt"))
+# April
+Apr_cm <- forecast_data_2021$Apr %>% mutate(forecast_date = ULVR_data_set$Apr$forecast_dates) %>%
+  pivot_longer(-forecast_date) %>% 
+  ggplot(aes(x = as.factor(forecast_date), y = as.numeric(name), fill = value)) + geom_tile() +
+
+  scale_fill_gradient2(high = 'blue', mid = 'white', low = 'red', na.value = 'lightgrey') +
+  
+  scale_y_reverse(labels = NULL) +
+  
+  scale_x_discrete(labels = NULL)+
+  
+  labs(x = 'Forcast Date',
+       y = 'April',
+       fill = 'Irithmics Score') +
+  theme_minimal(base_size = 5) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        plot.margin = unit(c(1, 5.5, 0, 5.5), "pt"))
+
+# July
+Jul_cm <- forecast_data_2021$Jul %>% mutate(forecast_date = ULVR_data_set$Jul$forecast_dates) %>%
+  pivot_longer(-forecast_date) %>% 
+  ggplot(aes(x = as.factor(forecast_date), y = as.numeric(name), fill = value)) + geom_tile() +
+
+  scale_fill_gradient2(high = 'blue', mid = 'white', low = 'red', na.value = 'lightgrey') +
+  
+  scale_y_reverse(labels = NULL) +
+  
+  scale_x_discrete(labels = NULL)+
+  
+  labs( y = 'July',
+       fill = 'Irithmics Score') +
+  theme_minimal(base_size = 5) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        plot.margin = unit(c(1, 5.5, 0, 5.5), "pt"))
+
+# Oct
+Oct_cm <- forecast_data_2021$Oct %>% mutate(forecast_date = ULVR_data_set$Oct$forecast_dates) %>%
+  pivot_longer(-forecast_date) %>% 
+  ggplot(aes(x = as.factor(forecast_date), y = as.numeric(name), fill = value)) + geom_tile() +
+
+  scale_fill_gradient2(high = 'blue', mid = 'white', low = 'red', na.value = 'lightgrey') +
+  
+  scale_y_reverse(labels = NULL) +
+  
+  scale_x_discrete(labels = NULL)+
+  
+  labs(x = 'Forcast Date',
+       y = 'October',
+       fill = 'Irithmics Score') +
+  theme_minimal(base_size = 5) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 90),
+        plot.margin = unit(c(1, 5.5, 5.5, 5.5), "pt"))
+```
+
+
+```{r}
+merged_data <- read_rds('merged_raw_data.rds')
+ULVR <- merged_data$ULVR
+# select the longer period 2020-11-04 -> 2021
+merged_set <- ULVR[[2]]
+
+# extract using a left-alligned UDF functions
+expectation_time_set <- expectation_time_extract(merged_set)
+
+# drop relative date for shifting
+left_alligned_data <- expectation_time_set$expect_data %>% select(-future_day)
+
+# set the lengths of each column (forecast) to be the whole foreacst range
+# forecast range is the whole generation period + the forecast length of the last forecast
+# get forecast length of last forecast
+last_length <- expectation_time_set$expect_data%>% 
+  select(ncol(expectation_time_set$expect_data)) %>% na.omit() %>% 
+  unlist(use.names = FALSE) %>% length()
+# get forecast range N.B. range is one less as it includes the forecast generation day in length of generation days
+forecast_range <- length(merged_set$date) + last_length - 1
+
+# assign lengths
+left_alligned_data <- apply(left_alligned_data, MARGIN = 2, function (x) {length(x) <- forecast_range; x})
+
+# now shift each column along by 1
+shifted_data <- foreach(i = seq(1, ncol(left_alligned_data)), .combine = cbind) %do% {
+  # select column i, and shift it back by i spaces
+  data.table::shift(left_alligned_data[,i], n = i, fill = NA, type = 'lag')
+}
+
+# set names to be generation date number (and coerce into df)
+shifted_data <- as.data.frame(shifted_data)
+shifted_data <- set_names(as.data.frame(shifted_data), seq(1, ncol(shifted_data)))
+
+# now select foreacst dates and add them to the df
+forecast_dates <- ULVR$forecast_dates
+
+# get index in forecast dates where first generation date occurs
+start <- match(as_date(merged_set$date)[1], as_date(forecast_dates)) %>% unlist(use.names = FALSE) %>% na.omit()
+
+# extract forecast dates N.B. -1 to account for double counting
+forecast_window <- forecast_dates[start:(start+forecast_range - 1)] %>% as_date()
+
+# add forecast dates as a variable to pivot around
+shifted_data$forecast_date <- forecast_window
+
+# extract announcement dates
+announcement_dates <- ULVR$announcement_dates
+# get mtching announcements
+match_announcements <- announcement_dates[match(as_date(merged_set$date), announcement_dates)] %>% na.omit()
+
+```
+
+Now plot a standard Irithmics heatmap of the data, noting the announcement dates.
+
+```{r}
+long <- shifted_data %>% pivot_longer(-as.character('forecast_date')) 
+
+# make a less cramped set of labels by setting every second one to blank
+xlabels <- format(sort(unique(long$forecast_date)), '%d %b')
+xlabels[seq(2, length(xlabels), 2)] <- ""
+xlabels[seq(2, length(xlabels), 3)] <- ""
+xlabels[seq(2, length(xlabels), 5)] <- ""
+
+ylabels <- as.character(format(as_date(merged_set$date), '%d %b'))
+ylabels[seq(2, length(ylabels), 2)] <- ""
+ 
+merged_2021_cm <- long %>%
+  ggplot(aes(x = as.factor(forecast_date), y = as.numeric(name), fill = value)) +
+  geom_tile() +
+
+   scale_x_discrete(labels = xlabels) + 
+   scale_fill_gradient2(high = 'blue', mid = 'white', low = 'red', na.value = 'lightgrey') +
+  
+  scale_y_reverse(breaks = 1:length(ylabels), labels = ylabels) +
+  
+  labs(x = 'Forcast Date',
+       y = 'Generation Date',
+       fill = 'Irithmics Score') +
+  theme_minimal(base_size = 5) +
+  theme(axis.text.x = element_text(angle = 90),
+        legend.position = c(0.75, 0.75)) +
+  # add announcements
+  geom_vline(data = as.data.frame(as.character(match_announcements)), 
+             aes(xintercept = as.character(match_announcements)), 
+             color='black', linetype = 'dashed', 
+             linewidth = 0.6, alpha = 0.4) +
+  geom_hline(data = as.data.frame(as.character(match_announcements)), 
+             aes(yintercept = match(announcement_dates, as_date(merged_set$date)) %>% na.omit()), 
+             color='black', linetype = 'dashed', 
+             linewidth = 0.6, alpha = 0.4)
+
+
+merged_2021_cm   
+```
+
+
+Arrange in a grid:
+```{r}
+
+grid.arrange(arrangeGrob(Feb_cm, Apr_cm, Jul_cm, Oct_cm, nrow = 4), merged_2021_cm, ncol = 2, widths = c(1,2))
+
+```
+
+To assess the impact of merging the data we can look at the median length of a forecast list before and after the merge.
+
+We can also look at the median number of forecasts per company (before and after) to show how much overlap there was.
+
+# Data Merging Step
+```{r}
+# get the list of big files
+big_files <- data.frame(file_names = read_rds('big_file_list.rds'))
+
+# get a list of unique tickers
+tickers <- lapply(big_files[,1], function(file) str_split_1(file, pattern = ' ')[4]) %>%
+                  unique() %>% unlist(use.names = FALSE)
+
+# get lists of files for each ticker
+# N.B. exact string matching to avoid issues like 'BA.XLON' capturing 'HSBA.XLON'incorrectly
+files_by_ticker <- lapply(tickers, function(ticker) {
+  file_names <- big_files[grepl(paste0('\\b',ticker,'\\b'), big_files$file_names),]
+})
+
+# set names to be tickers (and drop the XLON)
+files_by_ticker <- set_names(files_by_ticker, lapply(tickers, function(x){str_split_1(x, '.XLON')[1]}))  # set names to be ticker
+
+# extract the announcemnt dates for each file and store it with each ticker
+files_by_ticker <- lapply(files_by_ticker, function(file_list) {
+  list(file_names = file_list, 
+       announcement = lubridate::ymd(file_list))
+} )
+
+# for each list of files read in the JSON and merge
+setwd("~/MSc_Thesis_Supplementary_Material/data_folder")
+
+unmerged_data <- vector('list', 91)
+for (i in 1:length(files_by_ticker)) {
+  
+  # get file names and extract the JSON file
+  file_list <- files_by_ticker[[i]][[1]]
+  files <- lapply(file_list, jsonlite::fromJSON)
+  
+  unmerged_data[[i]] <- files
+}
+# set names of groups of lists to be the corresponding ticker
+unmerged_data <- set_names(unmerged_data, lapply(tickers, function(x){str_split_1(x, '.XLON')[1]}))  # set names to be ticker
+
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+
+```{r}
+# we can now get the number of files per ticker
+
+lengths <- data.frame(ticker = names(unmerged_data), nfiles = lapply(unmerged_data, length) %>% unlist(use.names = FALSE))
+
+n_forecasts <- foreach(company = unmerged_data) %do% {
+  n_forecasts <- lapply(company, function(X) {X$as_of_dates$date %>% length()})
+  
+  data.frame(mean_forecasts = mean(unlist(n_forecasts, use.names = FALSE)),
+             median_forecasts = median(unlist(n_forecasts, use.names = FALSE)),
+             min_forecasts = min(unlist(n_forecasts, use.names = FALSE)),
+             max_forecasts = max(unlist(n_forecasts, use.names = FALSE)))
+}
+n_forecasts <- n_forecasts %>% set_names(names(unmerged_data)) %>% bind_rows(.id = 'ticker')
+
+unmerged_n_forecasts <- merge(lengths, n_forecasts, by = 'ticker')
+```
+```{r}
+# we can do the same for the merged data set
+# N.B in its construction two variables forecast_dates_and announcemnt dates were added to each
+# ticker of merged data. Therefore the number of forecast sets is length - 2
+merged_lengths <- data.frame(ticker = names(merged_data), nfiles = lapply(merged_data, function(X){length(X) - 2}) %>% unlist(use.names = FALSE))
+
+merged_n_forecasts <- foreach(company = merged_data) %do% {
+  forecasts <- company[(names(company) %in% c('announcement_dates', 'forecast_dates')) == FALSE]
+  n_forecasts <- lapply(forecasts, function(X) {X$date %>% length()})
+  
+  data.frame(mean_forecasts = mean(unlist(n_forecasts, use.names = FALSE)),
+             median_forecasts = median(unlist(n_forecasts, use.names = FALSE)),
+             min_forecasts = min(unlist(n_forecasts, use.names = FALSE)),
+             max_forecasts = max(unlist(n_forecasts, use.names = FALSE)))
+}
+merged_n_forecasts <- merged_n_forecasts %>% set_names(names(merged_data)) %>% bind_rows(.id = 'ticker')
+
+merged_n_forecasts <- merge(merged_lengths, merged_n_forecasts, by = 'ticker')
+```
+```{r}
+summary_table <- data.frame(unmerged = unmerged_n_forecasts %>% summarise(mean_nfiles = mean(nfiles),
+                                                                      mean_mean_forecasts = mean(mean_forecasts),
+                                                                      
+                                                                      max_forecast = max(max_forecasts)) %>% t(), 
+                            merged = merged_n_forecasts %>% summarise(mean_nfiles = mean(nfiles),
+                                                                      mean_mean_forecasts = mean(mean_forecasts),
+                                                                      
+                                                                      max_forecast = max(max_forecasts)) %>% t()
+)
+
+summary_table %>% round()
+```
+
+``` {r}
+merged_left_alligned_plot <- hm_plot_exp_space(expectation_time_set$expect_data)
+
+merged_left_alligned_plot <- add_announcements_diag(merged_left_alligned_plot, expectation_time_set, announcement_dates = announcement_dates, merged_forecasts = merged_data$ULVR[[2]])
+
+ylabels <- as.character(format(as_date(merged_set$date), '%d %b'))
+ylabels[seq(2, length(ylabels), 2)] <- ""
+
+merged_left_alligned_plot + 
+  scale_y_reverse(breaks = 1:length(ylabels), labels = ylabels) +
+  geom_hline(data = as.data.frame(as.character(match_announcements)), 
+             aes(yintercept = match(announcement_dates, as_date(merged_set$date)) %>% na.omit()), 
+             color='black', linetype = 'dashed', 
+             linewidth = 0.6, alpha = 0.4) +
+  labs(x = "h")+
+  theme_minimal(base_size = 5)
+```

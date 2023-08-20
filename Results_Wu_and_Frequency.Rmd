@@ -1,0 +1,440 @@
+---
+title: "Results"
+author: '180000622'
+date: "2023-08-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(foreach)
+library(EMD)
+setwd("~/MSc_Thesis_Supplementary_Material/functions")
+source('significance_test_functions.R')
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+
+```{r}
+# source prepared data objects
+long_left_IMFs <- read_rds('long_series_IMFs.rds')
+scaled_long_left_IMFs <- read_rds('scaled_long_series_IMFs.rds')
+
+scaled_price_IMFs <- read_rds('scaled_price_IMFs.rds')
+unscaled_price_IMFs <- read_rds('unscaled_price_IMFs.rds')
+```
+
+First, let's consider what files we have:
+
+```{r}
+tickers <- names(long_left_IMFs)
+
+n_forecasts <- lapply(tickers, function(X) {
+  forecasts <- long_left_IMFs[[X]]$IMF_data
+  
+  lengths <- foreach(forecast = forecasts) %do% {
+    forecast$generation_dates %>% length()
+  }
+  
+  mean_len <- mean(unlist(lengths, use.names = FALSE))
+  range_len <- range(unlist(lengths, use.names = FALSE))
+  
+  return(data.frame(ticker = X,
+                    num_forecasts = length(forecasts),
+                    mean_length = mean_len,
+                    low_range = range_len[1],
+                    up_range = range_len[2]))
+})
+
+n_forecasts_df <- bind_rows(n_forecasts)
+```
+```{r}
+number_of_series <- n_forecasts_df$num_forecasts %>% sum()
+number_of_series
+```
+# Wu signif tests:
+
+First get energy density profiles for each expectations series
+```{r}
+# select the number of series that are IMFs
+num_IMFs <- log2(200) %>% round() - 1
+
+en_dens_score <- foreach(ticker = tickers) %do% {
+  IMF_df <- scaled_long_left_IMFs[[ticker]]$IMF_data
+  
+  n_merged_sets <- length(IMF_df)
+  
+  en_dens_period_generation <- vector('list', )
+  for (i in 1:n_merged_sets) {
+    IMFs <- IMF_df[[i]]$IMFs
+    en_dens_period_generation[[i]] <- foreach(series = IMFs, .final = function(x) {bind_rows(x)}) %do% {
+                                      en_den_period_df <- data.frame(IMFs = colnames(series[,1:num_IMFs]),
+                                      energy_density = energy_density_func(series[,1:num_IMFs]) %>% 
+                                       unlist(use.names = FALSE),
+                                      mean_periods = lapply(series[,1:num_IMFs], mean_period_func) %>% unlist(use.names = FALSE) )}
+  }
+  en_dens_period_generation
+}
+en_dens_score <- set_names(en_dens_score, tickers)
+```
+
+Significane Test 1: g+1 for all series
+
+To get the g+1 energy density profiles for each series we can extract the first 7 observations from each energy density profile
+
+```{r}
+# this set of loops selects the first 7 observations from each energy density profile
+# for each company and binds them all together to form an energy density profile for every 
+# g+1 observation in our long series subset fo the expectation data
+g1_en_dens <- foreach(ticker = tickers, .combine = bind_rows) %do% {
+  ticker_en_den <- en_dens_score[[ticker]]
+  
+  g1 <- foreach(profile = ticker_en_den, .combine = bind_rows) %do% {
+    # select first 7 rows of each profile
+    profile[1:7, ]
+  }
+}
+
+```
+
+## g+1 Wu test: 
+```{r}
+
+  # set variables for confidence intervals
+  # We will set N to be the mean length of the observed forecasts
+
+  N <- mean(n_forecasts_df$mean_length) %>% round()
+  x_series <- seq(0, max(log(g1_en_dens$mean_periods)), 0.1)
+
+  CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.01, N = N))
+
+  CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+
+
+  # plot
+  g1_en_dens %>% ggplot() +
+    # plot scaled expectations
+    geom_point(aes(x = log(mean_periods), 
+                 y = log(energy_density),
+                 color = IMFs), size = 1.5, shape = 'triangle') +
+
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+    
+    labs(x = expression(ln(bar(T))),
+         y = expression(ln(E)),
+         color = NULL) +
+  theme_minimal()
+```
+
+# all g+h Wu test
+
+Now let's plot a Wu test for all the g+h series
+```{r}
+# this set of loops selects all observations from each energy density profile
+# for each company and binds them all together to form an energy density profile for every 
+# g+h observation in our long series subset fo the expectation data
+gh_en_dens <- foreach(ticker = tickers, .combine = bind_rows) %do% {
+  ticker_en_den <- en_dens_score[[ticker]]
+  
+  gh <- foreach(profile = ticker_en_den, .combine = bind_rows) %do% {
+    # select first 7 rows of each profile
+    profile
+  }
+}
+```
+
+```{r}
+
+  # set variables for confidence intervals
+  # We will set N to be the mean length of the observed forecasts
+
+  N <- mean(n_forecasts_df$mean_length) %>% round()
+  x_series <- seq(0, max(log(gh_en_dens$mean_periods)), 0.1)
+
+  CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.01, N = N))
+
+  CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+
+
+  # plot
+  gh_en_dens %>% ggplot() +
+    # plot scaled expectations
+    geom_point(aes(x = log(mean_periods), 
+                 y = log(energy_density),
+                 color = IMFs), size = 1.5, shape = 'triangle',
+               alpha = 0.5) +
+
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+    
+    labs(x = expression(ln(bar(T))),
+         y = expression(ln(E)),
+         color = NULL) +
+  theme_minimal()
+```
+# Stock Price Wu Test
+
+We need to get the energy density profile of the stock price IMFs
+
+```{r}
+en_dens_price <- foreach(ticker = tickers, .combine = bind_rows) %do% {
+  IMF_df <- scaled_price_IMFs[[ticker]]$price_IMFs
+  
+  n_merged_sets <- length(IMF_df)
+  
+  en_dens_period_generation <- vector('list', )
+
+  en_dens_period_generation <- foreach(series = IMF_df, .combine = bind_rows) %do% {
+                                  en_den_period_df <- data.frame(IMFs = colnames(series[,1:num_IMFs]),
+                                  energy_density = energy_density_func(series[,1:num_IMFs]) %>% 
+                                  unlist(use.names = FALSE),
+                                  mean_periods = lapply(series[,1:num_IMFs], mean_period_func) %>% unlist(use.names = FALSE))}
+  en_dens_period_generation
+}
+```
+
+```{r}
+
+  # set variables for confidence intervals
+  # We will set N to be the mean length of the observed forecasts
+
+  N <- mean(n_forecasts_df$mean_length) %>% round()
+  x_series <- seq(0, max(log(en_dens_price$mean_periods)), 0.1)
+
+  CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.01, N = N))
+
+  CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+
+
+  # plot
+  en_dens_price %>% ggplot() +
+    # plot scaled expectations
+    geom_point(aes(x = log(mean_periods), 
+                 y = log(energy_density),
+                 color = IMFs), size = 1.5, shape = 'square',
+               alpha = 0.75) +
+
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+    
+    labs(x = expression(ln(bar(T))),
+         y = expression(ln(E)),
+         color = NULL) +
+  theme_minimal()
+```
+
+# Wu test for Price Change:
+```{r}
+en_dens_change <- foreach(ticker = tickers, .combine = bind_rows) %do% {
+  IMF_df <- scaled_price_IMFs[[ticker]]$change_IMFs
+  
+  n_merged_sets <- length(IMF_df)
+  
+  en_dens_period_generation <- vector('list', )
+
+  en_dens_period_generation <- foreach(series = IMF_df, .combine = bind_rows) %do% {
+                                  en_den_period_df <- data.frame(IMFs = colnames(series[,1:num_IMFs]),
+                                  energy_density = energy_density_func(series[,1:num_IMFs]) %>% 
+                                  unlist(use.names = FALSE),
+                                  mean_periods = lapply(series[,1:num_IMFs], mean_period_func) %>% unlist(use.names = FALSE))}
+  en_dens_period_generation
+}
+```
+
+```{r}
+
+  # set variables for confidence intervals
+  # We will set N to be the mean length of the observed forecasts
+
+  N <- mean(n_forecasts_df$mean_length) %>% round()
+  x_series <- seq(0, max(log(en_dens_change$mean_periods)), 0.1)
+
+  CI1 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.01, N = N))
+
+  CI5 <- data.frame(x = x_series,
+                 CI = confidence_intervals_func(x_series, alpha = 0.05, N = N))
+
+
+  # plot
+  en_dens_change %>% ggplot() +
+    # plot scaled expectations
+    geom_point(aes(x = log(mean_periods), 
+                 y = log(energy_density),
+                 color = IMFs), size = 1.5,
+               alpha = 0.75) +
+
+  geom_line(data = CI1, aes(x = x, y = CI.lower), linetype = 'dashed') +
+  geom_line(data = CI1, aes(x = x, y = CI.upper), linetype = 'dashed') +
+  
+  # add 5% confidence interval
+   geom_line(data = CI5, aes(x = x, y = CI.lower), linetype = 'dashed', color = 'red') +
+  geom_line(data = CI5, aes(x = x, y = CI.upper), linetype = 'dashed', color = 'red') +
+    
+    labs(x = expression(ln(bar(T))),
+         y = expression(ln(E)),
+         color = NULL) +
+  theme_minimal()
+```
+
+# Frequency/ Frequency plots
+
+To construct the frequency/frequency plot we need to do the hilbert transform to get 
+Instantaneous frequencies and amplitudes
+
+## Price Hilbert Transform
+```{r}
+# loop over each ticker and do the hilbert transform on each set of IMFs
+
+amp_freq_price <- foreach(ticker = tickers) %do% {
+  ticker_price_IMFs <- unscaled_price_IMFs[[ticker]]$price_IMFs
+  
+  # hilbertspec does the hilbert transform and computes the instantaneous frequency
+  # and amplitude for each IMF
+  amp_freq_list <- foreach(gen_period = ticker_price_IMFs) %do% {
+    EMD::hilbertspec(gen_period[,1:num_IMFs]) 
+  }
+}
+amp_freq_price <- set_names(amp_freq_price, tickers)
+```
+## Change Hilbert Transform
+```{r}
+# loop over each ticker and do the hilbert transform on each set of IMFs
+
+amp_freq_change <- foreach(ticker = tickers) %do% {
+  ticker_change_IMFs <- unscaled_price_IMFs[[ticker]]$change_IMFs
+  
+  # hilbertspec does the hilbert transform and computes the instantaneous frequency
+  # and amplitude for each IMF
+  amp_freq_list <- foreach(gen_period = ticker_change_IMFs) %do% {
+    EMD::hilbertspec(gen_period[,1:num_IMFs]) 
+  }
+}
+amp_freq_change <- set_names(amp_freq_change, tickers)
+```
+
+## g+h Hilbert Transform
+```{r}
+amp_freq_score <- foreach(ticker = tickers) %do% {
+  ticker_score_IMFs <- long_left_IMFs[[ticker]]$IMF_data
+  
+  # loop over the different merged foreacasts
+  amp_freq_list <- foreach(gen_period = ticker_score_IMFs) %do% {
+    # loop over the different g+h series within each merged forecast
+    IMFs <- gen_period$IMFs
+    amp_freq_sub_list <- foreach(series = IMFs) %do% {
+      amps_freqs <- EMD::hilbertspec(series[ ,1:num_IMFs])
+    }
+  }
+}
+amp_freq_score <- set_names(amp_freq_score, tickers)
+```
+
+## g+1 frequencies
+
+To compare all the g+1 frequencies against their respective price and price changes we need to make a data frame that pairs each series against each other for their respective observations.
+
+```{r}
+# this chunk selects all the g1 instantaneous frequencies and places them in a data frame with
+# the corresponding price and change frequencies
+
+# IMF colnames for IMF column in output df
+IMF_names <- names(unscaled_price_IMFs$ADM[[1]][[1]])[1:num_IMFs]
+
+g1_frequency <- foreach(ticker = tickers) %do% {
+  
+  af_price_ticker <- amp_freq_price[[ticker]]
+  af_change_ticker <- amp_freq_change[[ticker]]
+  af_score_ticker <- amp_freq_score[[ticker]]
+  
+  instant_freq <- foreach(i = seq(1:length(af_score_ticker))) %do% {
+    # make data frame by extracting IF matrix and stacking columns to form one long vector. Add
+    # an IMF column to identify the vectors. We must transpose the IF matrices so that the as.vector
+    # function stacks the rows keeping the ordering of IMF names the same
+    IF <- data.frame(IMF = rep(IMF_names, num_IMFs * nrow(af_score_ticker[[i]][[1]]$instantfreq)), 
+                     g1 = af_score_ticker[[i]][[1]]$instantfreq %>% t() %>% as.vector(),
+                     price = af_price_ticker[[i]]$instantfreq %>% t() %>% as.vector(),
+                     change = af_change_ticker[[i]]$instantfreq %>% t() %>% as.vector())
+  }
+}
+
+```
+
+# Frequency Scatterplots
+```{r}
+g1_bound <- g1_frequency %>% bind_rows()
+
+means_freq <- g1_bound %>% group_by(IMF) %>% summarise(score_mean = mean(`g1`),
+                                                         price_mean = mean(price),
+                                                         change_mean = mean(change))
+
+```
+```{r}
+g1_price <- g1_bound %>% ggplot(aes(x = `g1`, y = price, color = IMF)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = 'dashed') +
+  geom_point(data = means_freq, aes(x = score_mean, y = price_mean, color = IMF), color = 'black', shape = "X", size = 3) +
+  theme_minimal() +
+  labs(y = 'Price Close',
+       x = 'g+1') +
+  theme(legend.position = 'none')
+g1_price
+
+g1_change <- g1_bound %>% ggplot(aes(x = `g1`, y = change, color = IMF)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = 'dashed') +
+  geom_point(data = means_freq, aes(x = score_mean, y = change_mean, color = IMF), color = 'black', shape = "X", size = 3) +
+  theme_minimal() +
+  labs(y = 'Price Change',
+       x = 'g+1') +
+  theme(legend.position = 'none')
+
+g1_change
+
+price_change <- g1_bound %>% ggplot(aes(x = price, y = change, color = IMF)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = 'dashed') +
+  geom_point(data = means_freq, aes(x = price_mean, y = change_mean, color = IMF), color = 'black', shape = "X", size = 3) +
+  theme_minimal() +
+  labs(y = 'Price Change',
+       x = 'Price Close')
+price_change
+```
+
+```{r}
+g1_bound %>% ggplot() + geom_histogram(aes(g1, fill = IMF), bins =100) + facet_wrap(~IMF, scales = 'free')
+g1_bound %>% ggplot() + geom_histogram(aes(price, fill = IMF), bins = 100) + facet_wrap(~IMF, scales = 'free')
+g1_bound %>% ggplot() + geom_histogram(aes(change,  fill = IMF), bins = 100) + facet_wrap(~IMF, scales = 'free')
+```
+```{r}
+cor.test(g1_bound$g1, g1_bound$price)
+cor.test(g1_bound$g1, g1_bound$change)
+cor.test(g1_bound$price, g1_bound$change)
+```
+
+```{r}
+cor.test(g1_bound$g1[g1_bound$IMF == 'IMF 1'], g1_bound$price[g1_bound$IMF == 'IMF 1'])
+cor.test(g1_bound$g1[g1_bound$IMF == 'IMF 2'], g1_bound$price[g1_bound$IMF == 'IMF 2'])
+cor.test(g1_bound$g1[g1_bound$IMF == 'IMF 3'], g1_bound$price[g1_bound$IMF == 'IMF 3'])
+cor.test(g1_bound$g1[g1_bound$IMF == 'IMF 4'], g1_bound$price[g1_bound$IMF == 'IMF 4'])
+cor.test(g1_bound$g1[g1_bound$IMF == 'IMF 5'], g1_bound$price[g1_bound$IMF == 'IMF 5'])
+cor.test(g1_bound$g1[g1_bound$IMF == 'IMF 6'], g1_bound$price[g1_bound$IMF == 'IMF 6'])
+cor.test(g1_bound$g1[g1_bound$IMF == 'IMF 7'], g1_bound$price[g1_bound$IMF == 'IMF 7'])
+
+```

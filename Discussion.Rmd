@@ -1,0 +1,114 @@
+---
+title: "Discussion"
+author: '180000622'
+date: "2023-08-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(gridExtra)
+library(hrbrthemes)
+```
+```{r}
+expectation_IMFs <- read_rds('left_alligned_IMFs.rds')
+price_IMFs <- read_rds('unscaled_price_IMFs.rds')
+```
+# Variability
+Get the IMFs for $g+1$ and price:
+```{r}
+ticker <- 'ULVR'
+forecast <- 2
+
+ticker_g1_IMFs <- expectation_IMFs[[ticker]]$IMF_data[[forecast]]$IMFs[[1]]
+ticker_price_IMFs <- price_IMFs[[ticker]]$price_IMFs[[forecast]]
+```
+
+```{r}
+# get generation dates
+generation_dates <- expectation_IMFs[[ticker]]$IMF_data[[forecast]]$generation_dates %>% as_date()
+
+# get announcement days
+announcement_index <- match(as_date(expectation_IMFs[[ticker]]$announcements), generation_dates) %>% na.omit() 
+announcement_df <- data.frame(index = announcement_index)
+```
+
+Get the linear combination of the first two IMFs and compute variability
+```{r}
+ticker_g1_IMFs <- ticker_g1_IMFs %>% mutate(S2 = `IMF 1` + `IMF 2`)
+
+ticker_price_IMFs <- ticker_price_IMFs %>% mutate(S2 = `IMF 1` + `IMF 2`)
+
+# compute variability
+ticker_g1_IMFs <- ticker_g1_IMFs %>% mutate(variability = abs(S2)/series)
+ticker_price_IMFs <- ticker_price_IMFs %>% mutate(variability = abs(S2)/series)
+```
+
+```{r}
+original_plot <- ticker_g1_IMFs %>% mutate(g = as.numeric(rownames(ticker_g1_IMFs))) %>%
+  ggplot(aes(x = g)) + 
+  geom_line(aes(y = series), alpha = 0.5) +
+  geom_line(aes(y = series - `IMF 1` - `IMF 2`), color = 'darkcyan') +
+  geom_vline(data = announcement_df, aes(xintercept = index), linetype = 'dashed',
+             alpha = 0.4) +
+  labs(x = NULL,
+       y = expression(S)) +
+  theme_minimal(base_size = 10) 
+
+S2_plot <- ticker_g1_IMFs %>% mutate(g = as.numeric(rownames(ticker_g1_IMFs))) %>%
+  ggplot(aes(x = g)) + 
+  geom_line(aes(y = S2), color = 'darkblue') +
+  geom_vline(data = announcement_df, aes(xintercept = index), linetype = 'dashed',
+             alpha = 0.4) +
+  labs(x = NULL,
+       y = expression(S[H]^2)) +
+  theme_minimal(base_size = 10) +
+  theme(plot.margin = unit(c(0.5, 5.5, 0.5, 5.5), "pt"))
+
+var_plot <- ticker_g1_IMFs %>% mutate(g = as.numeric(rownames(ticker_g1_IMFs))) %>%
+  ggplot(aes(x = g)) + 
+  geom_line(aes(y = variability), color = 'darkorange') +
+  geom_vline(data = announcement_df, aes(xintercept = index), linetype = 'dashed',
+             alpha = 0.4) +
+  labs(x = 'Generation date',
+       y = expression(Variability: ~ abs(S[H]^2)/S)) +
+  theme_minimal(base_size = 10) +
+  theme(plot.margin = unit(c(0.5, 5.5, 5.5, 5.5), "pt"))
+  
+grid.arrange(original_plot, S2_plot, var_plot, ncol = 1, nrow = 3)
+```
+
+```{r}
+original_plot <- ticker_price_IMFs %>% mutate(g = as.numeric(rownames(ticker_g1_IMFs))+1) %>%
+  ggplot(aes(x = g)) + 
+  geom_line(aes(y = series), alpha = 0.5) +
+  geom_line(aes(y = series - `IMF 1` - `IMF 2`), color = 'darkred') +
+  geom_vline(data = announcement_df, aes(xintercept = index), linetype = 'dashed',
+             alpha = 0.4) +
+  labs(x = NULL,
+       y = expression(S)) +
+  theme_minimal(base_size = 10) 
+
+S2_plot <- ticker_price_IMFs %>% mutate(g = as.numeric(rownames(ticker_g1_IMFs))+1) %>%
+  ggplot(aes(x = g)) + 
+  geom_line(aes(y = S2), color = 'darkblue') +
+  geom_vline(data = announcement_df, aes(xintercept = index), linetype = 'dashed',
+             alpha = 0.4) +
+  labs(x = NULL,
+       y = expression(S[H]^2)) +
+  theme_minimal(base_size = 10) +
+  theme(plot.margin = unit(c(0.5, 5.5, 0.5, 5.5), "pt"))
+
+var_plot <- ticker_price_IMFs %>% mutate(g = as.numeric(rownames(ticker_g1_IMFs))+1) %>%
+  ggplot(aes(x = g)) + 
+  geom_line(aes(y = variability), color = 'darkorange') +
+  geom_vline(data = announcement_df, aes(xintercept = index), linetype = 'dashed',
+             alpha = 0.4) +
+  labs(x = 'Generation date',
+       y = expression(Variability: ~ abs(S[H]^2)/S)) +
+  theme_minimal(base_size = 10) +
+  theme(plot.margin = unit(c(0.5, 5.5, 5.5, 5.5), "pt"))
+  
+grid.arrange(original_plot, S2_plot, var_plot, ncol = 1, nrow = 3)
+```

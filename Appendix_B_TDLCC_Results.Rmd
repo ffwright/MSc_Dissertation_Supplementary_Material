@@ -1,0 +1,126 @@
+---
+title: "Appendix_B_TDCC Results"
+author: '180000622'
+date: "2023-08-12"
+output: html_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(foreach)
+library(forecast)
+library(foreach)
+library(ggpubr)
+library(ggcorrplot)
+library(gridExtra)
+
+setwd("~/MSc_Thesis_Supplementary_Material/functions")
+source('significance_test_functions.R')
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+```{r}
+lagged_correlations <- read_rds('TDL_Correlations.rds')
+long_left_IMFs <- read_rds('long_series_IMFs.rds')
+
+IMF_names <- colnames(long_left_IMFs$ADM$IMF_data[[1]]$IMFs[[1]])[1:8]
+tickers <- names(long_left_IMFs)
+```
+
+
+```{r}
+# Function to get the announcemnt g values
+announcement_g_values <- function(ticker, merged_forecast_num) {
+  # returns the matching index number of generation dates for the forecast of the announcemnts. This index is equivalent to g
+  announcement_g <- match(as_date(long_left_IMFs[[ticker]]$announcements), as_date(long_left_IMFs[[ticker]]$IMF_data[[merged_forecast_num]]$generation_dates)) %>% na.omit()
+  
+  announcement_g_df <- data.frame(g = announcement_g)
+  return(announcement_g_df)
+}
+
+```
+```{r}
+# Function to plot the lagged correlations
+lagged_ccf_plot <- function(lagged_ccf, ticker, merged_forecast_num) {
+  
+  # get g values of announcemnt dates
+  announce_df <- announcement_g_values(ticker, merged_forecast_num)
+  
+  # make the plot
+  lagged_plot <- lagged_ccf %>%
+  ggplot(aes(x = as.numeric(g), y = lag, fill = coef)) + 
+    geom_tile() +
+    scale_fill_gradient2(low = '#f4a317', mid = 'white', high = '#138ade') +
+    
+    labs(x = NULL,
+         y = expression(lambda),
+         fill = NULL) +
+    scale_x_continuous(limits = c(0, NA)) +
+    theme_minimal(base_size = 6) +
+    theme(legend.position = 'none')
+  
+  # add announcements
+  lagged_plot <- lagged_plot + geom_vline(data = announce_df, aes(xintercept = g), color = 'black', alpha = 0.5, linetype = 'dashed')
+  return(lagged_plot)
+}
+
+```
+
+```{r}
+# loop over each ticker and generate plots for each of the merged
+# forecasts available for that ticker
+foreach(ticker = tickers) %do% {
+  # loop over multiple forecasts
+  for (i in 1:length(lagged_correlations[[ticker]])) {
+    # generate price plots for each IMF
+    list_of_plots_price <- foreach(j = seq(1,8)) %do% {
+    lagged_ccf_plot(lagged_correlations[[ticker]][[i]][[j]]$price_cor, ticker = ticker, merged_forecast_num = i) + labs(x = IMF_names[j])
+  }
+    # generate change plots for each IMF
+    list_of_plots_change <- foreach(j = seq(1,8)) %do% {
+    lagged_ccf_plot(lagged_correlations[[ticker]][[i]][[j]]$change_cor, ticker = ticker, merged_forecast_num = i) + labs(x = IMF_names[j])
+  }
+  
+    # get the date range for the forecast
+    
+    date_range <- long_left_IMFs[[ticker]]$IMF_data[[i]]$generation_dates %>%
+      as_date() %>%
+      range() %>%
+      format('%d %B %Y') 
+      
+    
+    # arrange the plots in a side by side grid
+    grid.arrange(
+      # arrange the price as the left plots
+      arrangeGrob(list_of_plots_price[[1]],
+                  list_of_plots_price[[2]],
+                  list_of_plots_price[[3]],
+                  list_of_plots_price[[4]],
+                  list_of_plots_price[[5]],
+                  list_of_plots_price[[6]],
+                  list_of_plots_price[[7]],
+                  list_of_plots_price[[8]],
+  ncol = 2, nrow = 4,
+  top = text_grob( paste('Price Correlations'))
+  ),
+  
+  # arrange change as right plots
+  arrangeGrob(list_of_plots_change[[1]], 
+              list_of_plots_change[[2]], 
+              list_of_plots_change[[3]], 
+              list_of_plots_change[[4]],
+              list_of_plots_change[[5]],
+              list_of_plots_change[[6]],
+              list_of_plots_change[[7]], 
+              list_of_plots_change[[8]],
+  ncol = 2, nrow = 4, 
+  top = text_grob( paste('Change Correlations'))),
+  # add the ticker and forecasts as a title
+  top = text_grob(paste0(ticker, ': ', date_range[1],' - ',date_range[2])), ncol = 2)
+  }
+    
+}
+
+```

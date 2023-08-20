@@ -1,0 +1,169 @@
+---
+title: "Methods_2.3.4_Spectral_Analysis_Frequency_Plots"
+author: '180000622'
+date: "2023-08-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(Rlibeemd)
+library(EMD)
+library(forecast)
+library(hrbrthemes)
+library(gridExtra)
+library(foreach)
+
+setwd("~/MSc_Thesis_Supplementary_Material/functions")
+source('significance_test_functions.R')
+setwd("~/MSc_Thesis_Supplementary_Material")
+```
+
+```{r}
+left_alligned_IMFs <- read_rds('left_alligned_IMFs.rds')
+```
+```{r}
+# Function to do CEEMDAN
+ceemdan_function <- function(series, scaled = FALSE) {
+  
+  # if scaled series are required, scale
+  if (scaled == TRUE) {
+    series <- (series - min(series))/(max(series) - min(series))
+  }
+  
+  # first determine numer of IMFs to be computed:
+  num_IMFs <- round(log2(length(unlist(series, use.names = FALSE))))
+  
+  # set parameters:
+  ensemble <- 250
+  siftings <- 750
+  S <- 6 # the highest range in documentation
+  noise = 0.2 # as suggested in documentation
+  seed = 343
+  
+  # do CEEMDAN with preset parameters
+  IMFs <- Rlibeemd::ceemdan(series, num_imfs = num_IMFs, 
+                  ensemble_size = ensemble, 
+                  num_siftings = siftings,
+                  S_number = S,
+                  noise_strength = noise,
+                  rng_seed = seed)
+  
+  # convert to a data frame, and add the original series on to the end
+  IMFs_df <- IMFs %>% as.data.frame() %>% mutate(series = series)
+  
+  return(IMFs_df)
+}
+```
+```{r}
+ticker <- 'ULVR'
+
+ticker_IMFs_list <- left_alligned_IMFs[[ticker]]
+
+
+IMF_t1 <-ticker_IMFs_list$IMF_data[[2]]
+
+```
+
+```{r}
+# get generation dates
+generation_dates <- IMF_t1$generation_dates %>% as_date()
+
+# get announcement days
+announcement_index <- match(ticker_IMFs_list$announcements, generation_dates) %>% na.omit() 
+announcement_df <- data.frame(index = announcement_index)
+```
+
+Get price and price change:
+
+```{r}
+
+# import price data for the period [T, T+g+1]
+price_data <- read_rds('master_stock_prices.rds')
+
+ticker_price <- price_data[price_data$ticker == ticker, ]
+
+matching_dates <- match(generation_dates, ticker_price$date) %>% range()
+
+# extract matching prices with a padding on eaither side for differencing
+gen_period_prices <- ticker_price[(matching_dates[1]-1):(matching_dates[2]+1), ]
+
+ticker_prices_df <- gen_period_prices %>% select(date, price) %>% mutate(date = as_date(date), log_price = log(price), log_returns = c(NA, diff(log_price)[1:(length(log_price)-1)]), price_change = c(NA, diff(price)[1:(length(price)-1)]))
+```
+
+Now do CEEMDAN on price and on price change
+
+```{r}
+
+# decomose the series
+# discard first two rows of the IMFs so that they are the samre length as the forecast IMF
+IMFs_price <- ceemdan_function(ticker_prices_df$price)[3:nrow(ticker_prices_df), ]
+scaled_IMFs_price <- ceemdan_function(ticker_prices_df$price, scaled = TRUE)[3:nrow(ticker_prices_df), ]
+
+
+IMFs_change <- ceemdan_function(na.omit(ticker_prices_df$price_change))[2:(nrow(ticker_prices_df)-1), ]
+scaled_IMFs_change <- ceemdan_function(na.omit(ticker_prices_df$price_change, scaled = TRUE))[2:(nrow(ticker_prices_df)-1), ]
+```
+
+Now extract amplitude/frequency spectra for all the series:
+
+```{r}
+amp_freq_score <- foreach(IMF_set = IMF_t1$IMFs) %do% {
+  IMF_set[,1:7] %>% EMD::hilbertspec()
+}
+amp_freq_score <- amp_freq_score %>% set_names(as.character(seq(1, length(amp_freq_score))))
+
+amp_freq_price <- IMFs_price[,1:7] %>% EMD::hilbertspec()
+amp_freq_change <- IMFs_change[,1:7] %>% EMD::hilbertspec()
+```
+
+```{r}
+freq1 <- amp_freq_score$`1`$instantfreq %>% as.data.frame() %>% set_names(names(IMFs_price[,1:7])) %>% mutate(h = seq(1, nrow(amp_freq_score$`1`$instantfreq))) %>% pivot_longer(-h)
+
+price_freq <- amp_freq_price$instantfreq %>% as.data.frame() %>% set_names(names(IMFs_price[,1:7])) %>% mutate(h = seq(1, nrow(amp_freq_score$`1`$instantfreq))) %>% pivot_longer(-h)
+
+change_freq <- amp_freq_change$instantfreq %>% as.data.frame() %>% set_names(names(IMFs_price[,1:7])) %>% mutate(h = seq(1, nrow(amp_freq_score$`1`$instantfreq))) %>% pivot_longer(-h)
+
+
+bound_freq <- merge(merge(freq1, price_freq, by = c('h', 'name')), change_freq, by = c('h', 'name')) %>% set_names(c('h', 'IMF', 'g+1', 'price', 'change'))
+
+means_freq <- bound_freq %>% group_by(IMF) %>% summarise(score_mean = mean(`g+1`),
+                                                         price_mean = mean(price),
+                                                         change_mean = mean(change))
+```
+
+Now plot:
+```{r}
+g1_price <- bound_freq %>% ggplot(aes(x = `g+1`, y = price, color = IMF)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = 'dashed') +
+  geom_point(data = means_freq, aes(x = score_mean, y = price_mean, color = IMF), color = 'black', shape = "X", size = 3) +
+  theme_minimal() +
+  labs(y = 'Price Close',
+       x = 'g+1') +
+  theme(legend.position = 'none')
+g1_price
+
+g1_change <- bound_freq %>% ggplot(aes(x = `g+1`, y = change, color = IMF)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = 'dashed') +
+  geom_point(data = means_freq, aes(x = score_mean, y = change_mean, color = IMF), color = 'black', shape = "X", size = 3) +
+  theme_minimal() +
+  labs(y = 'Price Change',
+       x = 'g+1') +
+  theme(legend.position = 'none')
+
+g1_change
+
+price_change <- bound_freq %>% ggplot(aes(x = price, y = change, color = IMF)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = 'dashed') +
+  geom_point(data = means_freq, aes(x = price_mean, y = change_mean, color = IMF), color = 'black', shape = "X", size = 3) +
+  theme_minimal() +
+  labs(y = 'Price Change',
+       x = 'Price Close')
+price_change
+```
+```{r}
+cor.test(bound_freq$`g+1`, bound_freq$price)
+cor.test(bound_freq$`g+1`, bound_freq$change)
+cor.test(bound_freq$change, bound_freq$price)
+```
